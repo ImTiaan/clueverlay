@@ -17,6 +17,7 @@ import {
 import type { ParsedPlayerCommand } from './commandParser.js';
 import { findFuzzyMatch } from './text.js';
 import { supabaseAdmin } from './supabaseAdmin.js';
+import { sendChatMessage } from './twitchApi.js';
 
 type ChatActor = {
   userId: string;
@@ -41,7 +42,24 @@ type RuntimeContext = {
   bundle: CaseBundle;
 };
 
+type SuspectStatements = {
+  statementV1: string | null;
+  statementV2: string | null;
+};
+
 const RESULT_HOLD_SECONDS = 3;
+
+async function sendNarrationMessage(message: string | null): Promise<void> {
+  if (!message) {
+    return;
+  }
+
+  try {
+    await sendChatMessage(message);
+  } catch (error) {
+    console.error('Unable to send automatic narration message.', error);
+  }
+}
 
 function addSeconds(date: Date, seconds: number): string {
   return new Date(date.getTime() + seconds * 1000).toISOString();
@@ -269,6 +287,67 @@ async function getActiveCaseBundle(activeCaseId: string | null): Promise<CaseBun
   };
 }
 
+async function getSuspectStatements(suspectId: string): Promise<SuspectStatements> {
+  const { data } = await supabaseAdmin
+    .from('suspects')
+    .select('statement_v1, statement_v2')
+    .eq('id', suspectId)
+    .maybeSingle();
+
+  return {
+    statementV1: typeof data?.statement_v1 === 'string' ? data.statement_v1 : null,
+    statementV2: typeof data?.statement_v2 === 'string' ? data.statement_v2 : null,
+  };
+}
+
+function getCurrentFeaturedSuspect(bundle: CaseBundle, suspectIndex: number | null): RuntimeSuspect | null {
+  if (suspectIndex === null) {
+    return null;
+  }
+
+  return bundle.suspects.find((suspect) => suspect.sortOrder === suspectIndex) ?? null;
+}
+
+function buildCaseStartNarration(activeCase: RuntimeCase | null): string {
+  if (!activeCase) {
+    return 'A new case is live. Type !join to take part.';
+  }
+
+  return `New case: ${activeCase.victimName}. ${activeCase.sceneNarrative} Type !join to take part.`;
+}
+
+function buildSuspectIntroNarration(suspect: RuntimeSuspect | null, position: number, total: number): string | null {
+  if (!suspect) {
+    return null;
+  }
+
+  return `Suspect ${position} of ${total}: ${suspect.name}. ${suspect.description}`;
+}
+
+function buildSuspectStatementNarration(
+  label: 'Statement' | 'Follow-up',
+  suspectName: string,
+  statement: string | null,
+): string | null {
+  if (!statement) {
+    return null;
+  }
+
+  return `${label} - ${suspectName}: ${statement}`;
+}
+
+function buildInvestigationOpenNarration(activeCase: RuntimeCase | null): string {
+  if (!activeCase) {
+    return 'Investigation open. Joined players can examine evidence, ask for repeats, and accuse.';
+  }
+
+  return `Investigation open on ${activeCase.victimName}. Joined players can use !examine, !ask <suspect>, or !accuse <suspect>. Type !join if you have not entered yet.`;
+}
+
+function buildPlayerHelpMessage(): string {
+  return 'How to play: when a case starts, type !join to enter. Then use !examine <item>, !ask <suspect>, and !accuse <suspect> once investigation opens. Each player gets 2 accusations per case.';
+}
+
 async function ensurePlayer(actor: ChatActor): Promise<void> {
   await supabaseAdmin.from('players').upsert(
     {
@@ -450,6 +529,10 @@ async function advanceRuntimeStep(targetNow: Date): Promise<boolean> {
         updated_at: targetNow.toISOString(),
       });
 
+      await sendNarrationMessage(
+        `Time is up. ${culprit?.name ?? 'The culprit'} got away. ${bundle.activeCase.solutionSummary ?? ''}`.trim(),
+      );
+
       return true;
     }
   }
@@ -464,6 +547,7 @@ async function advanceRuntimeStep(targetNow: Date): Promise<boolean> {
 
   switch (gameState.phase) {
     case 'scene_intro': {
+      const nextSuspect = getCurrentFeaturedSuspect(bundle, 0);
       await updateGameState({
         phase: 'suspect_intro',
         current_suspect_index: 0,
@@ -471,11 +555,14 @@ async function advanceRuntimeStep(targetNow: Date): Promise<boolean> {
         phase_ends_at: addSeconds(transitionAt, settings.suspectIntroGapSeconds),
         updated_at: targetNow.toISOString(),
       });
+      await sendNarrationMessage(buildSuspectIntroNarration(nextSuspect, 1, bundle.suspects.length));
       return true;
     }
 
     case 'suspect_intro': {
       const currentIndex = gameState.currentSuspectIndex ?? 0;
+      const currentSuspect = getCurrentFeaturedSuspect(bundle, currentIndex);
+      const statements = currentSuspect ? await getSuspectStatements(currentSuspect.id) : null;
 
       await updateGameState({
         phase: 'suspect_speaking',
@@ -484,6 +571,13 @@ async function advanceRuntimeStep(targetNow: Date): Promise<boolean> {
         phase_ends_at: addSeconds(transitionAt, settings.suspectStatementIntervalSeconds),
         updated_at: targetNow.toISOString(),
       });
+      await sendNarrationMessage(
+        buildSuspectStatementNarration(
+          'Statement',
+          currentSuspect?.name ?? 'Suspect',
+          statements?.statementV1 ?? statements?.statementV2 ?? null,
+        ),
+      );
       return true;
     }
 
@@ -492,6 +586,7 @@ async function advanceRuntimeStep(targetNow: Date): Promise<boolean> {
       const nextIndex = currentIndex + 1;
 
       if (nextIndex < bundle.suspects.length) {
+        const nextSuspect = getCurrentFeaturedSuspect(bundle, nextIndex);
         await updateGameState({
           phase: 'suspect_intro',
           current_suspect_index: nextIndex,
@@ -499,6 +594,9 @@ async function advanceRuntimeStep(targetNow: Date): Promise<boolean> {
           phase_ends_at: addSeconds(transitionAt, settings.suspectIntroGapSeconds),
           updated_at: targetNow.toISOString(),
         });
+        await sendNarrationMessage(
+          buildSuspectIntroNarration(nextSuspect, nextIndex + 1, bundle.suspects.length),
+        );
         return true;
       }
 
@@ -509,6 +607,7 @@ async function advanceRuntimeStep(targetNow: Date): Promise<boolean> {
         phase_ends_at: null,
         updated_at: targetNow.toISOString(),
       });
+      await sendNarrationMessage(buildInvestigationOpenNarration(bundle.activeCase));
       return true;
     }
 
@@ -546,7 +645,7 @@ async function advanceRuntimeStep(targetNow: Date): Promise<boolean> {
     }
 
     case 'post_case': {
-      await activateNextReadyCase();
+      await activateNextReadyCase(true);
       return true;
     }
 
@@ -569,11 +668,11 @@ export async function advanceRuntimeToNow(maxSteps = 25): Promise<void> {
   }
 }
 
-export async function activateNextReadyCase(): Promise<{ caseId: string | null; message: string }> {
+export async function activateNextReadyCase(announceToChat = false): Promise<{ caseId: string | null; message: string }> {
   const settings = mapSettingsRow(await getGameSettingsRow());
   const { data: nextCase } = await supabaseAdmin
     .from('cases')
-    .select('id')
+    .select('id, scene_narrative, victim_name, victim_description, victim_avatar_url, solution_summary, evidence_items, guilty_suspect_id, suspect_count, evidence_count, status')
     .eq('status', 'ready')
     .order('created_at', { ascending: true })
     .limit(1)
@@ -623,9 +722,15 @@ export async function activateNextReadyCase(): Promise<{ caseId: string | null; 
     updated_at: now.toISOString(),
   });
 
+  const caseNarration = buildCaseStartNarration(mapRuntimeCaseRow(nextCase));
+
+  if (announceToChat) {
+    await sendNarrationMessage(caseNarration);
+  }
+
   return {
     caseId: String(nextCase.id),
-    message: 'Case started. Investigation is live.',
+    message: 'Case started. Type !join to enter.',
   };
 }
 
@@ -693,7 +798,7 @@ export async function applyAdminAction(action: AdminAction | 'status'): Promise<
   }
 
   if (action === 'start') {
-    return activateNextReadyCase().then(({ message }) => ({ handled: true, message }));
+    return activateNextReadyCase(true).then(({ message }) => ({ handled: true, message }));
   }
 
   if (action === 'stop') {
@@ -722,7 +827,7 @@ export async function applyAdminAction(action: AdminAction | 'status'): Promise<
 
     return {
       handled: true,
-      message: 'Game stopped. Overlay returned to idle.',
+      message: 'Game stopped. Overlay hidden.',
     };
   }
 
@@ -770,7 +875,7 @@ export async function applyAdminAction(action: AdminAction | 'status'): Promise<
         .eq('id', gameState.activeCaseId);
     }
 
-    return activateNextReadyCase().then(({ message }) => ({
+    return activateNextReadyCase(true).then(({ message }) => ({
       handled: true,
       message: gameState.activeCaseId ? `Case skipped. ${message}` : message,
     }));
@@ -806,7 +911,53 @@ export async function processChatCommand(
     return applyAdminAction(parsedCommand.command);
   }
 
+  if (parsedCommand.kind === 'info') {
+    return {
+      handled: true,
+      message: buildPlayerHelpMessage(),
+    };
+  }
+
   const runtime = await getPublicRuntime();
+
+  if (parsedCommand.command === 'join') {
+    if (!runtime.gameState.enabled || !runtime.activeCase) {
+      return {
+        handled: true,
+        message: 'No active case to join right now. Use !case to see how the game works.',
+      };
+    }
+
+    await ensurePlayer(actor);
+    const caseProgress = await getCaseProgress(actor.userId, runtime.activeCase.id);
+
+    if (caseProgress.joined_at) {
+      return {
+        handled: true,
+        message:
+          runtime.gameState.phase === 'investigation_open'
+            ? 'You are already in this case. Use !examine, !ask <suspect>, or !accuse <suspect>.'
+            : 'You are already in this case. Wait for investigation to open.',
+      };
+    }
+
+    await supabaseAdmin
+      .from('case_progress')
+      .update({
+        joined_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('player_id', actor.userId)
+      .eq('case_id', runtime.activeCase.id);
+
+    return {
+      handled: true,
+      message:
+        runtime.gameState.phase === 'investigation_open'
+          ? 'You are in. Use !examine <item>, !ask <suspect>, or !accuse <suspect>.'
+          : 'You are in. Listen to the case and wait for investigation to open.',
+    };
+  }
 
   if (!runtime.gameState.enabled || !runtime.activeCase) {
     return {
@@ -830,6 +981,15 @@ export async function processChatCommand(
   }
 
   await ensurePlayer(actor);
+  const caseProgress = await getCaseProgress(actor.userId, runtime.activeCase.id);
+
+  if (!caseProgress.joined_at) {
+    return {
+      handled: true,
+      message: 'Type !join to enter this case before using investigation commands.',
+    };
+  }
+
   const cooldownSeconds = getCooldownForCommand(runtime.settings, parsedCommand.command);
   const remainingCooldown = await getCooldownViolation(
     actor.userId,
@@ -845,7 +1005,6 @@ export async function processChatCommand(
   }
 
   await recordCooldown(actor.userId, parsedCommand.command);
-  const caseProgress = await getCaseProgress(actor.userId, runtime.activeCase.id);
 
   if (parsedCommand.command === 'examine') {
     const evidenceMatch = findFuzzyMatch(parsedCommand.query, runtime.activeCase.evidenceItems ?? [], (item) => item.name);
@@ -912,12 +1071,11 @@ export async function processChatCommand(
       .eq('player_id', actor.userId)
       .eq('case_id', runtime.activeCase.id);
 
-    const statement =
-      Math.random() > 0.5 ? suspectRow?.statement_v1 ?? '' : suspectRow?.statement_v2 ?? '';
+    const statement = suspectRow?.statement_v2 ?? suspectRow?.statement_v1 ?? '';
 
     return {
       handled: true,
-      message: statement,
+      message: buildSuspectStatementNarration('Follow-up', suspectMatch.name, statement),
     };
   }
 

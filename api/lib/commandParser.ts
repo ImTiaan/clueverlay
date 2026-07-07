@@ -3,8 +3,18 @@ import type { AdminAction } from '../../shared/game.js';
 export type ParsedPlayerCommand =
   | {
       kind: 'player';
+      command: 'join';
+      raw: string;
+    }
+  | {
+      kind: 'player';
       command: 'examine' | 'ask' | 'accuse';
       query: string;
+      raw: string;
+    }
+  | {
+      kind: 'info';
+      command: 'case_help';
       raw: string;
     }
   | {
@@ -40,11 +50,31 @@ export function parseChatCommand(message: string): ParsedPlayerCommand | null {
     };
   }
 
+  if (normalizedCommand === 'join') {
+    return {
+      kind: 'player',
+      command: 'join',
+      raw: trimmed,
+    };
+  }
+
   if (normalizedCommand === 'case') {
     const action = (rest[0] ?? '').toLowerCase();
 
+    if (!action || action === 'help') {
+      return {
+        kind: 'info',
+        command: 'case_help',
+        raw: trimmed,
+      };
+    }
+
     if (!adminCommands.has(action)) {
-      return null;
+      return {
+        kind: 'info',
+        command: 'case_help',
+        raw: trimmed,
+      };
     }
 
     return {

@@ -35,14 +35,17 @@ The following points are now treated as product requirements rather than open qu
 
 The intended player experience is a paced, bot-led investigation where chat has limited but meaningful actions.
 
-1. The bot starts a case by posting a scene narrative.
-2. The overlay enters the intro state and establishes the case visually.
-3. The bot introduces suspects one at a time and posts their initial statements.
-4. Once every suspect has spoken once, chat unlocks `!examine`, `!ask`, and `!accuse`.
-5. The first correct accusation solves the case immediately.
-6. Wrong accusations continue the investigation, but each player only gets two guesses.
-7. If the case times out unsolved, the culprit is revealed as having got away.
-8. After a short post-case beat, the next case begins.
+1. The bot starts a case by posting a short "case started" message.
+2. The bot immediately posts a second message that sets the scene and makes the case feel interesting.
+3. The overlay shows the victim profile during this opening beat.
+4. The bot introduces suspects one at a time and posts their initial statements.
+5. The overlay shows the currently featured suspect profile while each suspect is being introduced or speaking.
+6. Once every suspect has spoken once, chat unlocks `!examine`, `!ask`, and `!accuse`.
+7. The overlay switches into an investigation board that keeps all suspect names and examinable item names visible.
+8. The first correct accusation solves the case immediately.
+9. Wrong accusations continue the investigation, but each player only gets two guesses.
+10. If the case times out unsolved, the culprit is revealed as having got away.
+11. After a short post-case beat, the next case begins.
 
 ## Commands
 
@@ -50,15 +53,18 @@ Player commands are intentionally minimal so the game remains legible in live ch
 
 ### Player Commands
 
+- `!case` — explain how to join and which commands players can use
+- `!join` — opt into the currently active case so you can participate
 - `!examine [item]` — return the detail for a valid evidence item
-- `!ask [suspect]` — repost a suspect statement, choosing randomly from `statement_v1` or `statement_v2`
+- `!ask [suspect]` — post the suspect's follow-up statement (`statement_v2`) into chat so viewers can scroll back to it
 - `!accuse [suspect]` — spend one accusation attempt and resolve immediately
 
-Player commands are gated by case phase.
+Player commands are gated by both case phase and participation.
 
-- `!examine` is only available after all first statements are complete
-- `!ask` is only available after all first statements are complete
-- `!accuse` is only available after all first statements are complete
+- players must type `!join` after a case starts before they can use gameplay commands
+- `!examine` is only available to joined players after all first statements are complete
+- `!ask` is only available to joined players after all first statements are complete
+- `!accuse` is only available to joined players after all first statements are complete
 - all gameplay commands lock immediately after the case is solved
 
 ### Admin Commands
@@ -66,7 +72,7 @@ Player commands are gated by case phase.
 Admin commands are available to the broadcaster and moderators only.
 
 - `!case start` — enable the game loop and start the next eligible case if needed
-- `!case stop` — disable the game loop and return the overlay to idle
+- `!case stop` — disable the game loop and hide the overlay
 - `!case pause` — freeze timers and suppress automatic narration
 - `!case resume` — unpause and continue from the stored phase
 - `!case skip` — end the current case and rotate to the next one
@@ -107,6 +113,7 @@ The bot and overlay should operate from a small global state machine rather than
 - pausing also suppresses automatic narration messages
 - manual admin commands always override automated rotation
 - on restart, the bot reloads `game_state` and resumes the current phase
+- when a case starts, the bot should first announce that the case is live, then post a second scene-setting message that tells players to type `!join`
 
 ## Supabase Data Model
 
@@ -167,6 +174,7 @@ updated_at (timestamp)
 ```text
 player_id (text, fk -> players.twitch_user_id)
 case_id (uuid, fk -> cases.id)
+joined_at (timestamp, nullable) — set when the player enters the case with `!join`
 statements_requested (integer, default 0)
 examined_items (jsonb) — array of evidence item names
 accusations (jsonb) — array of { suspect_name, timestamp, result }
@@ -402,7 +410,11 @@ The bot is responsible for chat I/O, timing, state transitions, and score update
 
 - reject if the case is not in `investigation_open`
 - fuzzy-match against suspect names
-- choose randomly between `statement_v1` and `statement_v2`
+- post `statement_v2` into chat
+- if `statement_v2` is missing, fall back to `statement_v1`
+- suspect introduction flow should already have posted `statement_v1` into chat earlier
+- format the original suspect line as `Statement - <suspect>: <text>`
+- format the asked line as `Follow-up - <suspect>: <text>`
 - increment `statements_requested`
 
 #### `!accuse [suspect]`
@@ -435,22 +447,29 @@ The web app serves three distinct surfaces from the same deployment.
 
 ### Overlay Behaviour
 
-The overlay reflects the global game state rather than individual chat messages.
+The overlay reflects the global game state rather than individual chat messages, but chat owns the actual story narration and scene-setting text.
 
-- `scene_intro` shows the case intro card
-- `suspect_intro` and `suspect_speaking` show the active suspect portrait and name
-- `accusation_result` shows accuser + accused with `GUILTY` or `INNOCENT`
+- `idle` and `paused` render no visible overlay box; the route should remain fully transparent for OBS
+- when the overlay becomes visible, it should animate upward from below the frame
+- when the overlay is hidden by `pause` or `stop`, it should animate downward out of frame before disappearing
+- when the featured card changes phase, the current card should animate out and the next card should animate in rather than snapping
+- `scene_intro` shows the victim portrait, name, and short descriptor only
+- `suspect_intro` and `suspect_speaking` show the active suspect portrait, name, and short descriptor only
+- `investigation_open` shows an investigation board with the victim name, all suspect names, and all examinable item names
+- `accusation_result` shows the accused suspect with `GUILTY` or `INNOCENT`
 - `timeout_reveal` shows the culprit with `GOT AWAY`
 - post-solve and timeout reveals should use the hidden `solution_summary` in chat, but keep the overlay visually focused on the culprit only
 
 ### Visual Style
 
-- container: `350x350`
-- position: top-right
-- background: dark semi-transparent panel
-- suspect portrait size: about `200px`
-- accusation portrait size: about `120px`
-- verdict colours: green for `GUILTY`, red for `INNOCENT`
+- position: bottom-centre within a `1920x1080` OBS/browser source canvas
+- resting bottom margin: `48px`
+- profile shell size: `384x308`
+- investigation board shell size: `384x430`
+- shell background: `#040806`
+- profile layout: one featured portrait card with no long-form story text
+- investigation layout: compact board with suspect list and evidence list for chat recall
+- verdict colours: use the teewee green/neutral system rather than generic red/green
 
 ### Leaderboard
 
@@ -514,7 +533,7 @@ The live system should fail gracefully and avoid confusing chat.
 
 - [ ] Supabase project created and schema applied
 - [ ] Storage buckets configured for avatars
-- [ ] Ollama or chosen generator workflow producing valid case JSON
+- [ ] Groq generator workflow producing valid case JSON
 - [ ] Batch validation and avatar generation pipeline implemented
 - [ ] Case review workflow in place for sampling and culling
 - [ ] Validated cases loaded into Supabase as `ready`

@@ -31,16 +31,34 @@ type TimeoutRevealPayload = {
 };
 
 type DisplayCard = {
+  mode: 'profile' | 'board';
+  shellHeight: number;
   eyebrow: string;
   title: string;
   description: string;
   portraitUrl: string | null;
   portraitName: string;
-  footer: string;
   accentClass: string;
   surfaceClass: string;
   statLine: string | null;
+  suspectNames?: string[];
+  evidenceNames?: string[];
+  hintLine?: string;
 };
+
+type RenderState = {
+  card: DisplayCard;
+  phase: GamePhase;
+  signature: string;
+};
+
+const OVERLAY_SHELL_WIDTH = 384;
+const PROFILE_SHELL_HEIGHT = 308;
+const BOARD_SHELL_HEIGHT = 430;
+const OVERLAY_BOTTOM_MARGIN = 48;
+const OVERLAY_ENTER_OFFSET = 160;
+const OVERLAY_EXIT_MS = 320;
+const OVERLAY_ENTER_MS = 420;
 
 function getStringValue(payload: Record<string, unknown>, key: string): string | null {
   const value = payload[key];
@@ -161,6 +179,8 @@ function Portrait({
 export default function OverlayPage() {
   const [runtime, setRuntime] = useState<RuntimePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [renderState, setRenderState] = useState<RenderState | null>(null);
+  const [isVisible, setIsVisible] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -225,6 +245,13 @@ export default function OverlayPage() {
       ),
     [runtime?.suspects, timeoutReveal?.culpritSuspectId, timeoutReveal?.culpritSuspectName],
   );
+  const shouldHideOverlay = Boolean(
+    !error &&
+      (!runtime ||
+        !runtime.gameState.enabled ||
+        runtime.gameState.paused ||
+        !runtime.activeCase),
+  );
 
   const displayCard = useMemo<DisplayCard>(() => {
     const activeCase = runtime?.activeCase ?? null;
@@ -233,12 +260,13 @@ export default function OverlayPage() {
 
     if (!runtime?.gameState.enabled || !activeCase) {
       return {
+        mode: 'profile',
+        shellHeight: PROFILE_SHELL_HEIGHT,
         eyebrow: 'System Standby',
         title: 'Awaiting next case',
         description: 'Enable the game to push the next investigation live to chat and overlay.',
         portraitUrl: null,
         portraitName: 'The Case',
-        footer: 'Overlay is transparent and ready for OBS capture.',
         accentClass: 'border-[#303234]',
         surfaceClass: 'border-[#303234] bg-gradient-to-b from-[#111615] via-[#0C2D24] to-[#040806]',
         statLine: null,
@@ -247,15 +275,16 @@ export default function OverlayPage() {
 
     if (phase === 'scene_intro') {
       return {
+        mode: 'profile',
+        shellHeight: PROFILE_SHELL_HEIGHT,
         eyebrow: 'Victim Profile',
         title: activeCase.victimName,
         description: activeCase.victimDescription,
         portraitUrl: activeCase.victimAvatarUrl,
         portraitName: activeCase.victimName,
-        footer: activeCase.sceneNarrative,
         accentClass: 'border-[#1BAA7D]/45',
         surfaceClass: 'border-[#053F33] bg-gradient-to-b from-[#0C2D24] via-[#111615] to-[#040806]',
-        statLine: `${suspectCount} suspects • ${evidenceCount} evidence leads`,
+        statLine: 'Victim profile',
       };
     }
 
@@ -263,15 +292,13 @@ export default function OverlayPage() {
       const suspect = currentSuspect;
 
       return {
+        mode: 'profile',
+        shellHeight: PROFILE_SHELL_HEIGHT,
         eyebrow: phase === 'suspect_speaking' ? 'Now Speaking' : 'Suspect Introduction',
         title: suspect?.name ?? 'Suspect incoming',
         description: suspect?.description ?? 'The next suspect profile is loading.',
         portraitUrl: suspect?.avatarUrl ?? null,
         portraitName: suspect?.name ?? 'Suspect',
-        footer:
-          phase === 'suspect_speaking'
-            ? 'Watch for contradictions, motives, and anything that does not add up.'
-            : 'A new suspect is entering the frame.',
         accentClass: 'border-[#1BAA7D]/45',
         surfaceClass: 'border-[#053F33] bg-gradient-to-b from-[#0C2D24] via-[#111615] to-[#040806]',
         statLine:
@@ -281,16 +308,19 @@ export default function OverlayPage() {
 
     if (phase === 'investigation_open') {
       return {
+        mode: 'board',
+        shellHeight: BOARD_SHELL_HEIGHT,
         eyebrow: 'Investigation Open',
         title: activeCase.victimName,
-        description:
-          'Chat can now examine evidence, ask for repeats, and make accusations before time runs out.',
+        description: activeCase.victimDescription,
         portraitUrl: activeCase.victimAvatarUrl,
         portraitName: activeCase.victimName,
-        footer: `Victim: ${activeCase.victimDescription}`,
         accentClass: 'border-[#2ED9B0]/50',
         surfaceClass: 'border-[#1BAA7D]/45 bg-gradient-to-b from-[#0C2D24] via-[#111615] to-[#040806]',
-        statLine: `${suspectCount} suspects • ${evidenceCount} evidence items`,
+        statLine: `${suspectCount} suspects • ${evidenceCount} evidence`,
+        suspectNames: (runtime?.suspects ?? []).map((suspect) => suspect.name),
+        evidenceNames: (activeCase.evidenceItems ?? []).map((item) => item.name),
+        hintLine: '!ask <suspect>  !examine <item>  !accuse <suspect>',
       };
     }
 
@@ -299,21 +329,24 @@ export default function OverlayPage() {
       const correct = accusationResult?.correct === true;
 
       return {
+        mode: 'profile',
+        shellHeight: PROFILE_SHELL_HEIGHT,
         eyebrow: correct ? 'Verdict: Guilty' : 'Verdict: Innocent',
         title: resultSuspect?.name ?? accusationResult?.accusedSuspectName ?? 'Verdict incoming',
-        description: correct
-          ? activeCase.solutionSummary ?? 'Chat identified the correct culprit.'
-          : 'That accusation missed the real culprit. The case remains open.',
+        description:
+          resultSuspect?.description ??
+          (correct ? 'The culprit has been identified.' : 'This suspect has been cleared.'),
         portraitUrl: resultSuspect?.avatarUrl ?? null,
         portraitName: resultSuspect?.name ?? accusationResult?.accusedSuspectName ?? 'Suspect',
-        footer: accusationResult?.actorUserName
-          ? `Accusation made by ${accusationResult.actorUserName}.`
-          : 'The latest accusation has been resolved.',
         accentClass: correct ? 'border-[#2ED9B0]/55' : 'border-[#6D7572]',
         surfaceClass: correct
           ? 'border-[#1BAA7D]/45 bg-gradient-to-b from-[#0C2D24] via-[#111615] to-[#040806]'
           : 'border-[#303234] bg-gradient-to-b from-[#111615] via-[#0C2D24] to-[#040806]',
-        statLine: correct ? 'Case solved' : 'Investigation continues',
+        statLine: accusationResult?.actorUserName
+          ? `${correct ? 'Correct call' : 'Wrong call'} • ${accusationResult.actorUserName}`
+          : correct
+            ? 'Case solved'
+            : 'Investigation continues',
       };
     }
 
@@ -321,15 +354,14 @@ export default function OverlayPage() {
       const suspect = culpritSuspect ?? currentSuspect;
 
       return {
+        mode: 'profile',
+        shellHeight: PROFILE_SHELL_HEIGHT,
         eyebrow: 'Verdict: Got Away',
         title: suspect?.name ?? timeoutReveal?.culpritSuspectName ?? 'Unknown culprit',
         description:
-          timeoutReveal?.solutionSummary ??
-          activeCase.solutionSummary ??
-          'Time expired before chat could land the right accusation.',
+          suspect?.description ?? 'Time expired before chat could land the right accusation.',
         portraitUrl: suspect?.avatarUrl ?? null,
         portraitName: suspect?.name ?? timeoutReveal?.culpritSuspectName ?? 'Culprit',
-        footer: `${activeCase.victimName} never received justice before the timer ran out.`,
         accentClass: 'border-[#303234]',
         surfaceClass: 'border-[#303234] bg-gradient-to-b from-[#111615] via-[#0C2D24] to-[#040806]',
         statLine: 'Case expired',
@@ -337,12 +369,13 @@ export default function OverlayPage() {
     }
 
     return {
+      mode: 'profile',
+      shellHeight: PROFILE_SHELL_HEIGHT,
       eyebrow: 'Case Closed',
       title: activeCase.victimName,
-      description: activeCase.solutionSummary ?? activeCase.victimDescription,
+      description: activeCase.victimDescription,
       portraitUrl: activeCase.victimAvatarUrl,
       portraitName: activeCase.victimName,
-      footer: 'The next case will be prepared shortly.',
       accentClass: 'border-[#053F33]',
       surfaceClass: 'border-[#053F33] bg-gradient-to-b from-[#0C2D24] via-[#111615] to-[#040806]',
       statLine: 'Post-case state',
@@ -362,27 +395,128 @@ export default function OverlayPage() {
     timeoutReveal?.culpritSuspectName,
     timeoutReveal?.solutionSummary,
   ]);
+  const displaySignature = useMemo(
+    () =>
+      [
+        phase,
+        displayCard.mode,
+        displayCard.shellHeight,
+        displayCard.eyebrow,
+        displayCard.title,
+        displayCard.description,
+        displayCard.statLine ?? '',
+        (displayCard.suspectNames ?? []).join('|'),
+        (displayCard.evidenceNames ?? []).join('|'),
+      ].join('::'),
+    [
+      displayCard.description,
+      displayCard.evidenceNames,
+      displayCard.eyebrow,
+      displayCard.mode,
+      displayCard.shellHeight,
+      displayCard.statLine,
+      displayCard.suspectNames,
+      displayCard.title,
+      phase,
+    ],
+  );
+  const renderSignature = renderState?.signature ?? null;
+
+  useEffect(() => {
+    let timeoutId: number | null = null;
+
+    if (shouldHideOverlay) {
+      if (renderSignature) {
+        setIsVisible(false);
+        timeoutId = window.setTimeout(() => {
+          setRenderState(null);
+        }, OVERLAY_EXIT_MS);
+      }
+
+      return () => {
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId);
+        }
+      };
+    }
+
+    if (!renderSignature) {
+      setRenderState({
+        card: displayCard,
+        phase,
+        signature: displaySignature,
+      });
+
+      return;
+    }
+
+    if (renderSignature !== displaySignature) {
+      setIsVisible(false);
+      timeoutId = window.setTimeout(() => {
+        setRenderState({
+          card: displayCard,
+          phase,
+          signature: displaySignature,
+        });
+      }, OVERLAY_EXIT_MS);
+
+      return () => {
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId);
+        }
+      };
+    }
+
+    if (!isVisible) {
+      timeoutId = window.setTimeout(() => {
+        setIsVisible(true);
+      }, 16);
+    }
+
+    return () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [displayCard, displaySignature, isVisible, phase, renderSignature, shouldHideOverlay]);
+
+  if (!renderState && shouldHideOverlay) {
+    return <div className="h-screen w-screen bg-transparent" />;
+  }
+
+  if (!renderState) {
+    return <div className="h-screen w-screen bg-transparent" />;
+  }
+
+  const activePhase = renderState.phase;
+  const activeCard = renderState.card;
 
   return (
     <div className="h-screen w-screen bg-transparent">
-      <div className="pointer-events-none fixed left-6 top-6 w-[368px]">
-        <div className="relative">
-          <div className="absolute inset-[-10px] rounded-[36px] bg-[#040806]" />
-
-          <div className="relative rounded-[30px] border border-[#0C2D24] bg-[#040806] p-5">
+      <div
+        className="pointer-events-none fixed bottom-0 left-1/2"
+        style={{
+          transform: 'translateX(-50%)',
+          width: `${OVERLAY_SHELL_WIDTH}px`,
+          height: `${activeCard.shellHeight}px`,
+          bottom: `${OVERLAY_BOTTOM_MARGIN}px`,
+        }}
+      >
+        <div
+          className="h-full w-full rounded-[30px] border border-[#0C2D24] bg-[#040806] p-5 transition-[height,opacity,transform]"
+          style={{
+            opacity: isVisible ? 1 : 0,
+            transform: isVisible ? 'translate3d(0, 0, 0)' : `translate3d(0, ${OVERLAY_ENTER_OFFSET}px, 0)`,
+            transitionDuration: `${OVERLAY_ENTER_MS}ms`,
+            transitionTimingFunction: isVisible ? 'cubic-bezier(0.16, 1, 0.3, 1)' : 'cubic-bezier(0.7, 0, 0.84, 0)',
+          }}
+        >
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-[10px] uppercase tracking-[0.32em] text-[#6D7572]">The Case</p>
-                <p className="mt-2 text-sm font-medium text-[#F6F8F7]">{getPhaseTitle(phase)}</p>
+                <p className="mt-2 text-sm font-medium text-[#F6F8F7]">{getPhaseTitle(activePhase)}</p>
               </div>
-              <div className="flex flex-col items-end gap-2">
-                <PhaseBadge phase={phase} />
-                {runtime?.gameState.paused ? (
-                  <div className="rounded-full border border-[#2ED9B0]/30 bg-[#1BAA7D]/16 px-3 py-1 text-[10px] uppercase tracking-[0.24em] text-[#F6F8F7]">
-                    Paused
-                  </div>
-                ) : null}
-              </div>
+              <PhaseBadge phase={activePhase} />
             </div>
 
             {error ? (
@@ -391,35 +525,84 @@ export default function OverlayPage() {
               </div>
             ) : (
               <>
-                <div className={`mt-4 rounded-[26px] border px-5 py-5 ${displayCard.surfaceClass}`}>
+                <div
+                  className={`mt-4 rounded-[26px] border px-5 py-5 ${activeCard.surfaceClass}`}
+                  style={{
+                    minHeight: `${activeCard.mode === 'board' ? 332 : 208}px`,
+                  }}
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="text-[10px] uppercase tracking-[0.28em] text-[#A9B3AF]">{displayCard.eyebrow}</p>
-                      {displayCard.statLine ? (
-                        <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[#6D7572]">{displayCard.statLine}</p>
+                      <p className="text-[10px] uppercase tracking-[0.28em] text-[#A9B3AF]">{activeCard.eyebrow}</p>
+                      {activeCard.statLine ? (
+                        <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[#6D7572]">{activeCard.statLine}</p>
                       ) : null}
                     </div>
                     <div className="h-16 w-16 rounded-full bg-[#1BAA7D]/10 blur-2xl" />
                   </div>
 
-                  <div className="relative mt-4 flex items-start gap-4">
-                    <Portrait
-                      name={displayCard.portraitName}
-                      imageUrl={displayCard.portraitUrl}
-                      accentClass={displayCard.accentClass}
-                    />
+                  {activeCard.mode === 'board' ? (
+                    <>
+                      <div className="relative mt-4 flex items-start gap-4">
+                        <Portrait
+                          name={activeCard.portraitName}
+                          imageUrl={activeCard.portraitUrl}
+                          accentClass={activeCard.accentClass}
+                        />
 
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[1.35rem] font-semibold leading-7 text-[#F6F8F7]">{displayCard.title}</p>
-                      <p className="mt-2 text-sm leading-6 text-[#E8EEEB]">{displayCard.description}</p>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[1.35rem] font-semibold leading-7 text-[#F6F8F7]">{activeCard.title}</p>
+                          <p className="mt-2 text-sm leading-6 text-[#E8EEEB]">{activeCard.description}</p>
+                        </div>
+                      </div>
+
+                      <div className="mt-5 grid grid-cols-2 gap-3">
+                        <div className="rounded-[20px] border border-[#053F33] bg-[#040806]/70 p-4">
+                          <p className="text-[10px] uppercase tracking-[0.24em] text-[#A9B3AF]">Suspects</p>
+                          <div className="mt-3 space-y-2">
+                            {(activeCard.suspectNames ?? []).map((name) => (
+                              <p key={name} className="text-sm leading-5 text-[#F6F8F7]">
+                                {name}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-[20px] border border-[#053F33] bg-[#040806]/70 p-4">
+                          <p className="text-[10px] uppercase tracking-[0.24em] text-[#A9B3AF]">Evidence</p>
+                          <div className="mt-3 space-y-2">
+                            {(activeCard.evidenceNames ?? []).map((name) => (
+                              <p key={name} className="text-sm leading-5 text-[#F6F8F7]">
+                                {name}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {activeCard.hintLine ? (
+                        <p className="mt-4 text-[11px] uppercase tracking-[0.14em] text-[#6D7572]">
+                          {activeCard.hintLine}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="relative mt-4 flex items-start gap-4">
+                      <Portrait
+                        name={activeCard.portraitName}
+                        imageUrl={activeCard.portraitUrl}
+                        accentClass={activeCard.accentClass}
+                      />
+
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[1.35rem] font-semibold leading-7 text-[#F6F8F7]">{activeCard.title}</p>
+                        <p className="mt-2 text-sm leading-6 text-[#E8EEEB]">{activeCard.description}</p>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
-
-                <p className="mt-4 text-xs leading-5 text-[#A9B3AF]">{displayCard.footer}</p>
               </>
             )}
-          </div>
         </div>
       </div>
     </div>

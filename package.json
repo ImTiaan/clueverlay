@@ -13,7 +13,10 @@
     "server:dev": "nodemon",
     "dev": "concurrently \"npm run client:dev\" \"npm run server:dev\"",
     "twitch:verify": "node --import tsx ./api/scripts/verifyTwitch.ts",
-    "twitch:eventsub:ensure": "node --import tsx ./api/scripts/verifyTwitch.ts --ensure-chat-webhook"
+    "twitch:eventsub:ensure": "node --import tsx ./api/scripts/verifyTwitch.ts --ensure-chat-webhook",
+    "cases:generate": "node --import tsx ./api/scripts/generateCases.ts",
+    "cases:import": "node --import tsx ./api/scripts/importGeneratedCases.ts",
+    "cases:set-status": "node --import tsx ./api/scripts/setCaseStatus.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.50.2",
