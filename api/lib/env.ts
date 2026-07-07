@@ -4,7 +4,8 @@ type ServerEnv = {
   adminPassword: string;
   twitchClientId: string;
   twitchBroadcasterId: string;
-  twitchBotAccessToken: string;
+  twitchBotAccessToken?: string;
+  twitchBotRefreshToken?: string;
   twitchEventSubSecret: string;
   twitchClientSecret?: string;
   twitchEventSubCallbackUrl?: string;
@@ -22,7 +23,8 @@ export function getServerEnv(): ServerEnv {
   const adminPassword = process.env.ADMIN_PASSWORD;
   const twitchClientId = process.env.TWITCH_CLIENT_ID;
   const twitchBroadcasterId = process.env.TWITCH_BROADCASTER_ID;
-  const twitchBotAccessToken = process.env.TWITCH_BOT_ACCESS_TOKEN;
+  const twitchBotAccessToken = process.env.TWITCH_BOT_ACCESS_TOKEN?.trim() || undefined;
+  const twitchBotRefreshToken = process.env.TWITCH_BOT_REFRESH_TOKEN?.trim() || undefined;
   const twitchEventSubSecret = process.env.TWITCH_EVENTSUB_SECRET;
   const twitchClientSecret = process.env.TWITCH_CLIENT_SECRET;
   const twitchEventSubCallbackUrl = process.env.TWITCH_EVENTSUB_CALLBACK_URL;
@@ -47,8 +49,12 @@ export function getServerEnv(): ServerEnv {
     throw new Error('Missing TWITCH_BROADCASTER_ID');
   }
 
-  if (!twitchBotAccessToken) {
-    throw new Error('Missing TWITCH_BOT_ACCESS_TOKEN');
+  if (!twitchBotAccessToken && !twitchBotRefreshToken) {
+    throw new Error('Missing Twitch bot credentials: set TWITCH_BOT_ACCESS_TOKEN or TWITCH_BOT_REFRESH_TOKEN');
+  }
+
+  if (twitchBotRefreshToken && !twitchClientSecret) {
+    throw new Error('Missing TWITCH_CLIENT_SECRET');
   }
 
   if (!twitchEventSubSecret) {
@@ -62,6 +68,7 @@ export function getServerEnv(): ServerEnv {
     twitchClientId,
     twitchBroadcasterId,
     twitchBotAccessToken,
+    twitchBotRefreshToken,
     twitchEventSubSecret,
     twitchClientSecret,
     twitchEventSubCallbackUrl,

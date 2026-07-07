@@ -5,16 +5,25 @@ import {
   listEventSubSubscriptions,
   validateBotToken,
 } from '../lib/twitchApi.js';
+import { getBotTokenDebugState, getValidBotTokenState } from '../lib/twitchAuth.js';
 
 async function main(): Promise<void> {
+  const forceRefresh = process.argv.includes('--force-refresh');
+
+  if (forceRefresh) {
+    await getValidBotTokenState({ forceRefresh: true });
+  }
+
   const token = await validateBotToken();
   const botUser = await getBotUser();
   const subscriptions = await listEventSubSubscriptions();
   const chatSubscriptions = subscriptions.filter((subscription) => subscription.type === 'channel.chat.message');
+  const authState = await getBotTokenDebugState();
 
   console.log(
     JSON.stringify(
       {
+        authState,
         token: {
           login: token.login,
           userId: token.user_id,

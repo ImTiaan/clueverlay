@@ -1,4 +1,5 @@
 import { getServerEnv } from './env.js';
+import { getValidBotTokenState, validateStoredBotToken, type TwitchTokenValidation } from './twitchAuth.js';
 
 type TwitchUser = {
   id: string;
@@ -6,13 +7,7 @@ type TwitchUser = {
   display_name: string;
 };
 
-type ValidateTokenResponse = {
-  client_id: string;
-  login: string;
-  user_id: string;
-  scopes: string[];
-  expires_in: number;
-};
+type ValidateTokenResponse = TwitchTokenValidation;
 
 type SendChatMessageResponse = {
   data?: Array<{
@@ -46,6 +41,15 @@ type EventSubSubscriptionsResponse = {
 let cachedBotUser: TwitchUser | null = null;
 let cachedAppAccessToken: string | null = null;
 
+class TwitchApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function twitchFetchWithToken<T>(accessToken: string, path: string, init?: RequestInit): Promise<T> {
   const env = getServerEnv();
   const response = await fetch(`https://api.twitch.tv${path}`, {
@@ -60,14 +64,27 @@ async function twitchFetchWithToken<T>(accessToken: string, path: string, init?:
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Twitch API request failed: ${response.status} ${errorText}`);
+    throw new TwitchApiError(response.status, `Twitch API request failed: ${response.status} ${errorText}`);
   }
 
   return (await response.json()) as T;
 }
 
-async function twitchFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  return twitchFetchWithToken(getServerEnv().twitchBotAccessToken, path, init);
+async function twitchFetch<T>(path: string, init?: RequestInit, retryOnUnauthorized = true): Promise<T> {
+  const tokenState = await getValidBotTokenState();
+
+  try {
+    return await twitchFetchWithToken(tokenState.accessToken, path, init);
+  } catch (error) {
+    if (!(error instanceof TwitchApiError) || error.status !== 401 || !retryOnUnauthorized) {
+      throw error;
+    }
+
+    cachedBotUser = null;
+
+    const refreshedTokenState = await getValidBotTokenState({ forceRefresh: true });
+    return twitchFetchWithToken(refreshedTokenState.accessToken, path, init);
+  }
 }
 
 export async function getBotUser(): Promise<TwitchUser> {
@@ -87,19 +104,7 @@ export async function getBotUser(): Promise<TwitchUser> {
 }
 
 export async function validateBotToken(): Promise<ValidateTokenResponse> {
-  const env = getServerEnv();
-  const response = await fetch('https://id.twitch.tv/oauth2/validate', {
-    headers: {
-      Authorization: `OAuth ${env.twitchBotAccessToken}`,
-    },
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Unable to validate Twitch bot token: ${response.status} ${errorText}`);
-  }
-
-  return (await response.json()) as ValidateTokenResponse;
+  return validateStoredBotToken();
 }
 
 export async function getAppAccessToken(): Promise<string> {
