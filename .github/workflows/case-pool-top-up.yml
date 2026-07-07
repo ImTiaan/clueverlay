@@ -1,0 +1,41 @@
+name: Case Pool Top Up
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 */6 * * *'
+
+jobs:
+  top-up-ready-pool:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Top up ready case pool
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          TWITCH_BROADCASTER_ID: ${{ secrets.TWITCH_BROADCASTER_ID }}
+          TWITCH_BOT_ACCESS_TOKEN: ${{ secrets.TWITCH_BOT_ACCESS_TOKEN }}
+          TWITCH_BOT_REFRESH_TOKEN: ${{ secrets.TWITCH_BOT_REFRESH_TOKEN }}
+          TWITCH_EVENTSUB_SECRET: ${{ secrets.TWITCH_EVENTSUB_SECRET }}
+          TWITCH_EVENTSUB_CALLBACK_URL: ${{ secrets.TWITCH_EVENTSUB_CALLBACK_URL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_FALLBACK_MODELS: ${{ secrets.GROQ_FALLBACK_MODELS }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          PORT: 3001
+        run: npm run cases:top-up-ready -- --target-ready=25 --min-score=72 --max-attempts-per-case=4

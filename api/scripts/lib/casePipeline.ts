@@ -31,14 +31,57 @@ export type GeneratedCaseEnvelope = {
   case: GeneratedCase;
 };
 
+export type GenerationOptions = {
+  extraConstraints?: string[];
+};
+
+export class GroqRateLimitError extends Error {
+  model: string;
+  retryAfterSeconds: number | null;
+  isDailyTokenLimit: boolean;
+
+  constructor(params: {
+    model: string;
+    message: string;
+    retryAfterSeconds?: number | null;
+    isDailyTokenLimit?: boolean;
+  }) {
+    super(params.message);
+    this.name = 'GroqRateLimitError';
+    this.model = params.model;
+    this.retryAfterSeconds = params.retryAfterSeconds ?? null;
+    this.isDailyTokenLimit = params.isDailyTokenLimit ?? false;
+  }
+}
+
+export class GroqUnsupportedStructuredOutputModelError extends Error {
+  model: string;
+
+  constructor(model: string) {
+    super(
+      `Groq model "${model}" does not support strict json_schema structured outputs. Supported strict models: openai/gpt-oss-20b, openai/gpt-oss-120b.`,
+    );
+    this.name = 'GroqUnsupportedStructuredOutputModelError';
+    this.model = model;
+  }
+}
+
 export const GENERATED_CASES_DIR = path.resolve(process.cwd(), 'content/generated/cases');
 export const GENERATED_ASSETS_DIR = path.resolve(process.cwd(), 'content/generated/assets');
+export const GENERATED_REJECTED_CASES_DIR = path.resolve(process.cwd(), 'content/generated/rejected');
 export const CASE_ASSET_BUCKET = 'case-assets';
 const PROMPT_VERSION = 'v1';
-export const DEFAULT_GROQ_CASE_MODEL = 'openai/gpt-oss-120b';
+export const DEFAULT_GROQ_CASE_MODEL = 'openai/gpt-oss-20b';
 const GROQ_MAX_RETRIES = 4;
+export const GROQ_STRICT_STRUCTURED_OUTPUT_MODELS = ['openai/gpt-oss-20b', 'openai/gpt-oss-120b'] as const;
 
-export function getGenerationPrompt(): string {
+export function getGenerationPrompt(options?: GenerationOptions): string {
+  const extraConstraints = options?.extraConstraints?.filter((constraint) => constraint.trim().length > 0) ?? [];
+  const extraConstraintBlock =
+    extraConstraints.length > 0
+      ? `\nAdditional anti-duplication constraints:\n${extraConstraints.map((constraint) => `- ${constraint}`).join('\n')}`
+      : '';
+
   return `Generate one mystery case for a Twitch chat detective game. Return ONLY valid JSON, with no markdown and no preamble.
 
 Schema:
@@ -56,109 +99,138 @@ Constraints:
 - Use 3 to 5 suspects.
 - Use 3 to 5 evidence items.
 - All names must be fictional.
+- guilty_suspect_name must exactly match one suspect name character-for-character.
 - Include a short private solution_summary for the final reveal.
 - Make at least one innocent suspect sound scattered or vague in a believable way.
 - Give the guilty suspect at least one detail that feels slightly too neat or implausible on close reading.
 - Evidence should subtly support the correct answer without making it trivial.
+- Every evidence item must make contextual sense for the scene and cause of death.
+- If there is a murder weapon or decisive object, reference it consistently in the scene, the evidence, and the solution summary.
+- Do not include random props or clues that have no logical bearing on how the crime happened.
 - Tone can be darker, but must remain Twitch-safe.
 - Do not include real-world hate content or sexual violence themes.
 - Avoid generic placeholder names.
 - Make every suspect description visually specific enough to support an avatar and overlay card.
-- Keep statements short enough to work as Twitch chat messages.`;
+- Keep statements short enough to work as Twitch chat messages.${extraConstraintBlock}`;
 }
 
-export async function generateCaseWithGroq(model: string): Promise<GeneratedCaseEnvelope> {
+export async function generateCaseWithGroq(model: string, options?: GenerationOptions): Promise<GeneratedCaseEnvelope> {
   const apiKey = process.env.GROQ_API_KEY;
 
   if (!apiKey) {
     throw new Error('Missing GROQ_API_KEY');
   }
 
+  if (!supportsStrictStructuredOutputs(model)) {
+    throw new GroqUnsupportedStructuredOutputModelError(model);
+  }
+
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < GROQ_MAX_RETRIES; attempt += 1) {
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.7,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You generate fictional Twitch-safe detective cases. Return only schema-compliant JSON.',
-          },
-          {
-            role: 'user',
-            content: getGenerationPrompt(),
-          },
-        ],
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
-            name: 'the_case_generation',
-            strict: true,
-            schema: getCaseJsonSchema(),
-          },
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
         },
-      }),
-    });
+        body: JSON.stringify({
+          model,
+          temperature: 0.7,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'You generate fictional Twitch-safe detective cases. Return only schema-compliant JSON.',
+            },
+            {
+              role: 'user',
+              content: getGenerationPrompt(options),
+            },
+          ],
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'the_case_generation',
+              strict: true,
+              schema: getCaseJsonSchema(),
+            },
+          },
+        }),
+      });
 
-    if (response.ok) {
-      const payload = (await response.json()) as {
-        choices?: Array<{
-          message?: {
-            content?: string | null;
-            refusal?: string | null;
-          };
-        }>;
-      };
-      const choice = payload.choices?.[0];
-      const refusal = choice?.message?.refusal;
-      const content = choice?.message?.content;
+      if (response.ok) {
+        const payload = (await response.json()) as {
+          choices?: Array<{
+            message?: {
+              content?: string | null;
+              refusal?: string | null;
+            };
+          }>;
+        };
+        const choice = payload.choices?.[0];
+        const refusal = choice?.message?.refusal;
+        const content = choice?.message?.content;
 
-      if (refusal) {
-        throw new Error(`Groq generation refused the request: ${refusal}`);
+        if (refusal) {
+          throw new Error(`Groq generation refused the request: ${refusal}`);
+        }
+
+        if (!content) {
+          throw new Error('Groq did not return generated case content.');
+        }
+
+        const parsed = JSON.parse(content) as unknown;
+        const generatedCase = validateGeneratedCase(parsed);
+
+        return {
+          schemaVersion: 1,
+          generatedAt: new Date().toISOString(),
+          sourceModel: model,
+          promptVersion: PROMPT_VERSION,
+          case: generatedCase,
+        };
       }
 
-      if (!content) {
-        throw new Error('Groq did not return generated case content.');
+      const errorText = await response.text();
+      const retryAfterHeader = response.headers.get('retry-after');
+      const tokenResetHeader = response.headers.get('x-ratelimit-reset-tokens');
+      const retrySeconds = parseRetryAfterSeconds(retryAfterHeader, tokenResetHeader, errorText);
+      const isDailyTokenLimit = /tokens per day|TPD/i.test(errorText);
+      const isSchemaValidationFailure = /json_validate_failed/i.test(errorText);
+
+      lastError =
+        response.status === 429
+          ? new GroqRateLimitError({
+              model,
+              message: `Groq generation failed: ${response.status} ${errorText}`,
+              retryAfterSeconds: retrySeconds,
+              isDailyTokenLimit,
+            })
+          : new Error(`Groq generation failed: ${response.status} ${errorText}`);
+
+      if (response.status === 429 && isDailyTokenLimit) {
+        throw lastError;
       }
 
-      const parsed = JSON.parse(content) as unknown;
-      const generatedCase = validateGeneratedCase(parsed);
+      if ((response.status === 429 || isSchemaValidationFailure) && attempt < GROQ_MAX_RETRIES - 1) {
+        const waitMs = Math.ceil((retrySeconds ?? 15) * 1000 + 500);
+        await sleep(waitMs);
+        continue;
+      }
 
-      return {
-        schemaVersion: 1,
-        generatedAt: new Date().toISOString(),
-        sourceModel: model,
-        promptVersion: PROMPT_VERSION,
-        case: generatedCase,
-      };
+      throw lastError;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('Unknown Groq generation error.');
+
+      if (attempt < GROQ_MAX_RETRIES - 1) {
+        await sleep(1000);
+        continue;
+      }
+
+      throw lastError;
     }
-
-    const errorText = await response.text();
-    const retryAfterHeader = response.headers.get('retry-after');
-    const retrySecondsMatch = errorText.match(/Please try again in ([0-9.]+)s/i);
-    const retrySeconds = retryAfterHeader
-      ? Number(retryAfterHeader)
-      : retrySecondsMatch
-        ? Number(retrySecondsMatch[1])
-        : null;
-
-    lastError = new Error(`Groq generation failed: ${response.status} ${errorText}`);
-
-    if (response.status === 429 && attempt < GROQ_MAX_RETRIES - 1) {
-      const waitMs = Math.ceil((retrySeconds ?? 15) * 1000);
-      await sleep(waitMs);
-      continue;
-    }
-
-    throw lastError;
   }
 
   if (lastError) {
@@ -172,6 +244,65 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
   });
+}
+
+function parseRetryAfterSeconds(
+  retryAfterHeader: string | null,
+  tokenResetHeader: string | null,
+  errorText: string,
+): number | null {
+  if (retryAfterHeader) {
+    const parsed = parseDurationToSeconds(retryAfterHeader);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+
+  if (tokenResetHeader) {
+    const parsed = parseDurationToSeconds(tokenResetHeader);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+
+  const retryMatch = errorText.match(/Please try again in\s+([0-9.]+(?:ms|s)|[0-9]+m[0-9.]+s)/i);
+  if (retryMatch) {
+    return parseDurationToSeconds(retryMatch[1]);
+  }
+
+  return null;
+}
+
+function parseDurationToSeconds(value: string): number | null {
+  const trimmed = value.trim();
+
+  if (/^[0-9.]+$/.test(trimmed)) {
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  const millisecondsMatch = trimmed.match(/^([0-9.]+)ms$/i);
+  if (millisecondsMatch) {
+    return Number(millisecondsMatch[1]) / 1000;
+  }
+
+  const minuteSecondMatch = trimmed.match(/^([0-9]+)m([0-9.]+)s$/i);
+  if (minuteSecondMatch) {
+    return Number(minuteSecondMatch[1]) * 60 + Number(minuteSecondMatch[2]);
+  }
+
+  const secondsMatch = trimmed.match(/^([0-9.]+)s$/i);
+  if (secondsMatch) {
+    return Number(secondsMatch[1]);
+  }
+
+  return null;
+}
+
+export function supportsStrictStructuredOutputs(model: string): boolean {
+  return GROQ_STRICT_STRUCTURED_OUTPUT_MODELS.includes(
+    model as (typeof GROQ_STRICT_STRUCTURED_OUTPUT_MODELS)[number],
+  );
 }
 
 function getCaseJsonSchema(): Record<string, unknown> {
@@ -335,13 +466,17 @@ function assertUniqueValues(values: string[], message: string): void {
 export async function ensureGeneratedDirectories(): Promise<void> {
   await mkdir(GENERATED_CASES_DIR, { recursive: true });
   await mkdir(GENERATED_ASSETS_DIR, { recursive: true });
+  await mkdir(GENERATED_REJECTED_CASES_DIR, { recursive: true });
 }
 
-export async function saveGeneratedCaseFile(envelope: GeneratedCaseEnvelope): Promise<string> {
+export async function saveGeneratedCaseFile(
+  envelope: GeneratedCaseEnvelope,
+  outputDirectory = GENERATED_CASES_DIR,
+): Promise<string> {
   await ensureGeneratedDirectories();
 
   const filename = `${new Date(envelope.generatedAt).toISOString().replace(/[:.]/g, '-')}-${slugify(envelope.case.victim_name)}.json`;
-  const filePath = path.join(GENERATED_CASES_DIR, filename);
+  const filePath = path.join(outputDirectory, filename);
 
   await writeFile(filePath, `${JSON.stringify(envelope, null, 2)}\n`, 'utf8');
 

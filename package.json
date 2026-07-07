@@ -17,6 +17,8 @@
     "twitch:refresh-token": "node --import tsx ./api/scripts/verifyTwitch.ts --force-refresh",
     "twitch:eventsub:ensure": "node --import tsx ./api/scripts/verifyTwitch.ts --ensure-chat-webhook",
     "cases:generate": "node --import tsx ./api/scripts/generateCases.ts",
+    "cases:build-pool": "node --import tsx ./api/scripts/buildCasePool.ts",
+    "cases:top-up-ready": "node --import tsx ./api/scripts/topUpReadyCases.ts",
     "cases:import": "node --import tsx ./api/scripts/importGeneratedCases.ts",
     "cases:set-status": "node --import tsx ./api/scripts/setCaseStatus.ts"
   },
