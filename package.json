@@ -21,7 +21,7 @@
     "cases:top-up-ready": "node --import tsx ./api/scripts/topUpReadyCases.ts",
     "cases:import": "node --import tsx ./api/scripts/importGeneratedCases.ts",
     "cases:set-status": "node --import tsx ./api/scripts/setCaseStatus.ts",
-    "supabase:reset": "node --import tsx ./api/scripts/resetSupabase.ts"
+    "danger:reset-supabase": "node --import tsx ./api/scripts/resetSupabase.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.50.2",

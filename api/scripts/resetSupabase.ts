@@ -8,6 +8,12 @@ type StorageEntry = {
 };
 
 const DELETE_ALL_SINCE = '1970-01-01T00:00:00.000Z';
+const RESET_CONFIRMATION = 'RESET_CASE_DATA';
+
+function getFlag(name: string): string | undefined {
+  const match = process.argv.find((arg) => arg.startsWith(`--${name}=`));
+  return match ? match.slice(name.length + 3) : undefined;
+}
 
 async function deleteAllRows(table: string, timestampColumn: string): Promise<number> {
   const { error, count } = await supabaseAdmin
@@ -131,6 +137,13 @@ async function clearCaseAssetsBucket(): Promise<number> {
 }
 
 async function main(): Promise<void> {
+  const confirmation = getFlag('confirm');
+  if (confirmation !== RESET_CONFIRMATION) {
+    throw new Error(
+      `Refusing to reset Supabase without explicit confirmation. Re-run with --confirm=${RESET_CONFIRMATION}`,
+    );
+  }
+
   const deletedCooldowns = await deleteAllRows('player_command_cooldowns', 'last_used_at');
   const deletedProgress = await deleteAllRows('case_progress', 'created_at');
   const deletedEvents = await deleteAllRows('game_events', 'created_at');
