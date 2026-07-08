@@ -31,6 +31,11 @@ Default model:
 
 - `openai/gpt-oss-20b`
 
+Structured output mode:
+
+- `GROQ_STRUCTURED_OUTPUT_MODE=strict` (default): uses Groq `json_schema` structured outputs
+- `GROQ_STRUCTURED_OUTPUT_MODE=best_effort`: allows non-`json_schema` models and relies on local validation + retries
+
 Recommended fallback chain for strict structured outputs:
 
 - `openai/gpt-oss-120b`
@@ -40,6 +45,7 @@ Useful flags:
 - `npm run cases:generate -- --count=5`
 - `npm run cases:generate -- --model=openai/gpt-oss-20b --count=25`
 - `npm run cases:generate -- --count=100 --max-failures=20`
+- `npm run cases:generate -- --structured-output=best_effort --model=qwen/qwen3-32b --count=25`
 
 Each generated file is wrapped with metadata and contains:
 
@@ -178,7 +184,7 @@ For this project, the practical implication is:
 
 1. use `openai/gpt-oss-20b` as the default because it supports strict `json_schema`
 2. keep `openai/gpt-oss-120b` as the strict-compatible fallback
-3. do not configure `qwen/qwen3-32b` or `meta-llama/llama-4-scout-17b-16e-instruct` for this pipeline unless the code is changed to use best-effort structured outputs instead of strict mode
+3. if you need higher throughput, set `GROQ_STRUCTURED_OUTPUT_MODE=best_effort` and then you may configure models like `qwen/qwen3-32b` or `meta-llama/llama-4-scout-17b-16e-instruct` (local validation will reject malformed outputs and retry)
 
 ## Promotion Step
 

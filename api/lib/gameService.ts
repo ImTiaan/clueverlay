@@ -92,6 +92,7 @@ function mapGameStateRow(row: Record<string, unknown>): GameState {
 function mapSettingsRow(row: Record<string, unknown>): GameSettings {
   return {
     channelId: String(row.channel_id),
+    joinWindowSeconds: Number(row.join_window_seconds ?? DEFAULT_GAME_SETTINGS.joinWindowSeconds),
     sceneIntroSeconds: Number(row.scene_intro_seconds),
     suspectIntroGapSeconds: Number(row.suspect_intro_gap_seconds),
     suspectStatementIntervalSeconds: Number(row.suspect_statement_interval_seconds),
@@ -183,6 +184,7 @@ async function getGameSettingsRow(): Promise<Record<string, unknown>> {
   if (error || !data) {
     return {
       channel_id: DEFAULT_GAME_SETTINGS.channelId,
+      join_window_seconds: DEFAULT_GAME_SETTINGS.joinWindowSeconds,
       scene_intro_seconds: DEFAULT_GAME_SETTINGS.sceneIntroSeconds,
       suspect_intro_gap_seconds: DEFAULT_GAME_SETTINGS.suspectIntroGapSeconds,
       suspect_statement_interval_seconds: DEFAULT_GAME_SETTINGS.suspectStatementIntervalSeconds,
@@ -309,11 +311,29 @@ function getCurrentFeaturedSuspect(bundle: CaseBundle, suspectIndex: number | nu
 }
 
 function buildCaseStartNarration(activeCase: RuntimeCase | null): string {
+  return 'Case started. Type !join to enter.';
+}
+
+function buildJoinConfirmationNarration(actor: ChatActor): string {
+  return `@${actor.userName} joined to investigate. Follow the case and investigate to solve the case.`;
+}
+
+function buildCaseIntroNarration(activeCase: RuntimeCase | null): string | null {
   if (!activeCase) {
-    return 'A new case is live. Type !join to take part.';
+    return null;
   }
 
-  return `New case: ${activeCase.victimName}. ${activeCase.sceneNarrative} Type !join to take part.`;
+  return `Case file: ${activeCase.victimName}. ${activeCase.sceneNarrative}`.trim();
+}
+
+function buildEvidenceIntroNarrations(activeCase: RuntimeCase | null): string[] {
+  if (!activeCase?.evidenceItems || activeCase.evidenceItems.length === 0) {
+    return [];
+  }
+
+  const intro = 'Evidence recovered at the scene:';
+  const entries = activeCase.evidenceItems.map((item) => `${item.name}: ${item.detail}`.trim());
+  return [intro, ...entries];
 }
 
 function buildSuspectIntroNarration(suspect: RuntimeSuspect | null, position: number, total: number): string | null {
@@ -546,6 +566,22 @@ async function advanceRuntimeStep(targetNow: Date): Promise<boolean> {
   const transitionAt = phaseEndsAt ?? targetNow;
 
   switch (gameState.phase) {
+    case 'join_open': {
+      await updateGameState({
+        phase: 'scene_intro',
+        current_suspect_index: null,
+        phase_started_at: transitionAt.toISOString(),
+        phase_ends_at: addSeconds(transitionAt, settings.sceneIntroSeconds),
+        updated_at: targetNow.toISOString(),
+      });
+
+      await sendNarrationMessage(buildCaseIntroNarration(bundle.activeCase));
+      for (const message of buildEvidenceIntroNarrations(bundle.activeCase)) {
+        await sendNarrationMessage(message);
+      }
+      return true;
+    }
+
     case 'scene_intro': {
       const nextSuspect = getCurrentFeaturedSuspect(bundle, 0);
       await updateGameState({
@@ -713,19 +749,19 @@ export async function activateNextReadyCase(announceToChat = false): Promise<{ c
     enabled: true,
     paused: false,
     active_case_id: nextCase.id,
-    phase: 'scene_intro',
+    phase: 'join_open',
     current_suspect_index: null,
     phase_started_at: now.toISOString(),
-    phase_ends_at: addSeconds(now, settings.sceneIntroSeconds),
+    phase_ends_at: addSeconds(now, settings.joinWindowSeconds),
     paused_at: null,
     last_event_id: eventId,
     updated_at: now.toISOString(),
   });
 
-  const caseNarration = buildCaseStartNarration(mapRuntimeCaseRow(nextCase));
-
   if (announceToChat) {
-    await sendNarrationMessage(caseNarration);
+    await sendNarrationMessage(
+      `${buildCaseStartNarration(mapRuntimeCaseRow(nextCase))} Joining closes in ${settings.joinWindowSeconds}s.`,
+    );
   }
 
   return {
@@ -954,8 +990,8 @@ export async function processChatCommand(
       handled: true,
       message:
         runtime.gameState.phase === 'investigation_open'
-          ? 'You are in. Use !examine <item>, !ask <suspect>, or !accuse <suspect>.'
-          : 'You are in. Listen to the case and wait for investigation to open.',
+          ? `${buildJoinConfirmationNarration(actor)} Use !examine <item>, !ask <suspect>, or !accuse <suspect>.`
+          : buildJoinConfirmationNarration(actor),
     };
   }
 

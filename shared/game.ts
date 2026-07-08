@@ -9,6 +9,7 @@ export const PLAYER_RANKS = [
 
 export const GAME_PHASES = [
   'idle',
+  'join_open',
   'scene_intro',
   'suspect_intro',
   'suspect_speaking',
@@ -39,6 +40,7 @@ export type EvidenceItem = {
 
 export type GameSettings = {
   channelId: string;
+  joinWindowSeconds: number;
   sceneIntroSeconds: number;
   suspectIntroGapSeconds: number;
   suspectStatementIntervalSeconds: number;
@@ -110,9 +112,10 @@ export type AdminAction = 'start' | 'stop' | 'pause' | 'resume' | 'skip' | 'relo
 
 export const DEFAULT_GAME_SETTINGS: GameSettings = {
   channelId: GAME_CHANNEL_ID,
+  joinWindowSeconds: 120,
   sceneIntroSeconds: 30,
   suspectIntroGapSeconds: 5,
-  suspectStatementIntervalSeconds: 75,
+  suspectStatementIntervalSeconds: 150,
   postCaseCountdownSeconds: 20,
   caseTimeoutMinutes: 45,
   cooldownExamineSeconds: 3,

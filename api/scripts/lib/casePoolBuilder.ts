@@ -6,8 +6,10 @@ import {
   GroqTransportError,
   GroqUnsupportedStructuredOutputModelError,
   generateCaseWithGroq,
+  getStructuredOutputMode,
   saveGeneratedCaseFile,
   supportsStrictStructuredOutputs,
+  type StructuredOutputMode,
 } from './casePipeline.js';
 import { buildCaseCorpusEntryFromGeneratedCase, reviewGeneratedCase, type CaseCorpusEntry } from './caseReview.js';
 import { ensureStorageBucket, importCaseEnvelope, loadExistingCaseCorpus } from './caseImport.js';
@@ -18,6 +20,7 @@ export type BuildCasePoolOptions = {
   maxAttempts?: number;
   model?: string;
   fallbackModels?: string[];
+  structuredOutputMode?: StructuredOutputMode;
   status?: 'draft' | 'ready';
   dryRun?: boolean;
 };
@@ -69,6 +72,7 @@ export async function buildCasePool(options: BuildCasePoolOptions): Promise<Buil
     maxAttempts = count * 3,
     model = process.env.GROQ_CASE_MODEL ?? DEFAULT_GROQ_CASE_MODEL,
     fallbackModels = parseModelList(process.env.GROQ_FALLBACK_MODELS),
+    structuredOutputMode = getStructuredOutputMode(),
     status = 'draft',
     dryRun = false,
   } = options;
@@ -100,6 +104,7 @@ export async function buildCasePool(options: BuildCasePoolOptions): Promise<Buil
     maxAttempts,
     model,
     fallbackModels,
+    structuredOutputMode,
     status,
     dryRun,
   });
@@ -120,7 +125,11 @@ export async function buildCasePoolAgainstCorpus(
   while (imported.length < options.count && attempts < options.maxAttempts) {
     attempts += 1;
 
-    const generation = await generateWithFallbackModels(modelSequence, buildAvoidanceConstraints(corpus));
+    const generation = await generateWithFallbackModels(
+      modelSequence,
+      buildAvoidanceConstraints(corpus),
+      options.structuredOutputMode,
+    );
 
     if (generation.pausedDueToQuota) {
       pausedDueToQuota = true;
@@ -227,6 +236,7 @@ async function loadExistingCaseCorpusWithStatuses(): Promise<{
 async function generateWithFallbackModels(
   models: string[],
   extraConstraints: string[],
+  structuredOutputMode: StructuredOutputMode,
 ): Promise<
   | {
       pausedDueToQuota: false;
@@ -250,7 +260,7 @@ async function generateWithFallbackModels(
   const transportFailedModels: string[] = [];
 
   for (const model of models) {
-    if (!supportsStrictStructuredOutputs(model)) {
+    if (structuredOutputMode === 'strict' && !supportsStrictStructuredOutputs(model)) {
       skippedModels.push(model);
       continue;
     }
@@ -258,6 +268,7 @@ async function generateWithFallbackModels(
     try {
       const envelope = await generateCaseWithGroq(model, {
         extraConstraints,
+        structuredOutputMode,
       });
 
       return {

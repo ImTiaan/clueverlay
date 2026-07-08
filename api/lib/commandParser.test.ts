@@ -35,7 +35,15 @@ describe('parseChatCommand', () => {
   it('rejects unsupported or incomplete commands', () => {
     expect(parseChatCommand('hello detectives')).toBeNull();
     expect(parseChatCommand('!ask')).toBeNull();
-    expect(parseChatCommand('!case')).toBeNull();
-    expect(parseChatCommand('!case dance')).toBeNull();
+    expect(parseChatCommand('!case')).toEqual({
+      kind: 'info',
+      command: 'case_help',
+      raw: '!case',
+    });
+    expect(parseChatCommand('!case dance')).toEqual({
+      kind: 'info',
+      command: 'case_help',
+      raw: '!case dance',
+    });
   });
 });

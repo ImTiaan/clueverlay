@@ -33,7 +33,10 @@ export type GeneratedCaseEnvelope = {
 
 export type GenerationOptions = {
   extraConstraints?: string[];
+  structuredOutputMode?: StructuredOutputMode;
 };
+
+export type StructuredOutputMode = 'strict' | 'best_effort';
 
 export class GroqRateLimitError extends Error {
   model: string;
@@ -95,6 +98,14 @@ export const DEFAULT_GROQ_CASE_MODEL = 'openai/gpt-oss-20b';
 const GROQ_MAX_RETRIES = 4;
 export const GROQ_STRICT_STRUCTURED_OUTPUT_MODELS = ['openai/gpt-oss-20b', 'openai/gpt-oss-120b'] as const;
 
+export function getStructuredOutputMode(input?: string | null): StructuredOutputMode {
+  const raw = (input ?? process.env.GROQ_STRUCTURED_OUTPUT_MODE ?? 'strict').trim().toLowerCase();
+  if (raw === 'best_effort' || raw === 'best-effort' || raw === 'best') {
+    return 'best_effort';
+  }
+  return 'strict';
+}
+
 export function getGenerationPrompt(options?: GenerationOptions): string {
   const extraConstraints = options?.extraConstraints?.filter((constraint) => constraint.trim().length > 0) ?? [];
   const extraConstraintBlock =
@@ -116,6 +127,8 @@ Schema:
 }
 
 Constraints:
+- scene_narrative must be 3 to 5 sentences with concrete, sensory details (sound, light, smell, weather, etc.).
+- victim_description must be 1 to 2 sentences and feel like a real person with a clear identity.
 - Use 3 to 5 suspects.
 - Use 3 to 5 evidence items.
 - All names must be fictional.
@@ -127,6 +140,9 @@ Constraints:
 - Every evidence item must make contextual sense for the scene and cause of death.
 - If there is a murder weapon or decisive object, reference it consistently in the scene, the evidence, and the solution summary.
 - Do not include random props or clues that have no logical bearing on how the crime happened.
+- Each evidence.detail should be 1 to 2 sentences describing what it is and why it matters.
+- Each statement_v1 must be 2 to 4 sentences: where they were, what they did, what they noticed, and one concrete detail tied to the scene or evidence.
+- Each statement_v2 must be 2 to 4 sentences: a follow-up that adds NEW information, clarifies timeline, or reveals a subtle contradiction (especially for the guilty suspect).
 - Tone can be darker, but must remain Twitch-safe.
 - Do not include real-world hate content or sexual violence themes.
 - Avoid generic placeholder names.
@@ -136,12 +152,13 @@ Constraints:
 
 export async function generateCaseWithGroq(model: string, options?: GenerationOptions): Promise<GeneratedCaseEnvelope> {
   const apiKey = process.env.GROQ_API_KEY;
+  const structuredOutputMode = getStructuredOutputMode(options?.structuredOutputMode);
 
   if (!apiKey) {
     throw new Error('Missing GROQ_API_KEY');
   }
 
-  if (!supportsStrictStructuredOutputs(model)) {
+  if (structuredOutputMode === 'strict' && !supportsStrictStructuredOutputs(model)) {
     throw new GroqUnsupportedStructuredOutputModelError(model);
   }
 
@@ -149,6 +166,18 @@ export async function generateCaseWithGroq(model: string, options?: GenerationOp
 
   for (let attempt = 0; attempt < GROQ_MAX_RETRIES; attempt += 1) {
     try {
+      const responseFormat =
+        structuredOutputMode === 'strict'
+          ? {
+              type: 'json_schema',
+              json_schema: {
+                name: 'the_case_generation',
+                strict: true,
+                schema: getCaseJsonSchema(),
+              },
+            }
+          : undefined;
+
       const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -169,14 +198,7 @@ export async function generateCaseWithGroq(model: string, options?: GenerationOp
               content: getGenerationPrompt(options),
             },
           ],
-          response_format: {
-            type: 'json_schema',
-            json_schema: {
-              name: 'the_case_generation',
-              strict: true,
-              schema: getCaseJsonSchema(),
-            },
-          },
+          ...(responseFormat ? { response_format: responseFormat } : {}),
         }),
       });
 
@@ -201,7 +223,7 @@ export async function generateCaseWithGroq(model: string, options?: GenerationOp
           throw new Error('Groq did not return generated case content.');
         }
 
-        const parsed = JSON.parse(content) as unknown;
+        const parsed = parseBestEffortJson(content);
         const generatedCase = validateGeneratedCase(parsed);
 
         return {
@@ -219,6 +241,7 @@ export async function generateCaseWithGroq(model: string, options?: GenerationOp
       const retrySeconds = parseRetryAfterSeconds(retryAfterHeader, tokenResetHeader, errorText);
       const isDailyTokenLimit = /tokens per day|TPD/i.test(errorText);
       const isSchemaValidationFailure = /json_validate_failed/i.test(errorText);
+      const isResponseFormatUnsupported = /does not support response format/i.test(errorText);
 
       if (response.status === 429) {
         lastError = new GroqRateLimitError({
@@ -227,6 +250,12 @@ export async function generateCaseWithGroq(model: string, options?: GenerationOp
           retryAfterSeconds: retrySeconds,
           isDailyTokenLimit,
         });
+      } else if (
+        response.status === 400 &&
+        structuredOutputMode === 'strict' &&
+        isResponseFormatUnsupported
+      ) {
+        lastError = new GroqUnsupportedStructuredOutputModelError(model);
       } else if (isSchemaValidationFailure) {
         lastError = new GroqSchemaValidationError(model, `Groq generation failed: ${response.status} ${errorText}`);
       } else {
@@ -271,6 +300,28 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
   });
+}
+
+function parseBestEffortJson(content: string): unknown {
+  const trimmed = content.trim();
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    const extracted = extractFirstJsonObject(trimmed);
+    if (!extracted) {
+      throw new Error('Groq returned non-JSON output.');
+    }
+    return JSON.parse(extracted) as unknown;
+  }
+}
+
+function extractFirstJsonObject(input: string): string | null {
+  const start = input.indexOf('{');
+  const end = input.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    return null;
+  }
+  return input.slice(start, end + 1);
 }
 
 function parseRetryAfterSeconds(

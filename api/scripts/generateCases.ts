@@ -2,6 +2,7 @@ import '../lib/loadEnv.js';
 import {
   DEFAULT_GROQ_CASE_MODEL,
   generateCaseWithGroq,
+  getStructuredOutputMode,
   saveGeneratedCaseFile,
 } from './lib/casePipeline.js';
 
@@ -12,6 +13,7 @@ function getFlag(name: string, defaultValue: string): string {
 
 async function main(): Promise<void> {
   const model = getFlag('model', process.env.GROQ_CASE_MODEL ?? DEFAULT_GROQ_CASE_MODEL);
+  const structuredOutputMode = getStructuredOutputMode(getFlag('structured-output', process.env.GROQ_STRUCTURED_OUTPUT_MODE ?? 'strict'));
   const count = Number(getFlag('count', '1'));
   const maxFailures = Number(getFlag('max-failures', '10'));
 
@@ -28,7 +30,7 @@ async function main(): Promise<void> {
 
   for (let index = 0; index < count; index += 1) {
     try {
-      const envelope = await generateCaseWithGroq(model);
+      const envelope = await generateCaseWithGroq(model, { structuredOutputMode });
       const filePath = await saveGeneratedCaseFile(envelope);
       results.push(filePath);
     } catch (error) {

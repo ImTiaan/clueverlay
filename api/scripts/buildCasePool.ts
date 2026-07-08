@@ -1,5 +1,5 @@
 import '../lib/loadEnv.js';
-import { DEFAULT_GROQ_CASE_MODEL } from './lib/casePipeline.js';
+import { DEFAULT_GROQ_CASE_MODEL, getStructuredOutputMode } from './lib/casePipeline.js';
 import { buildCasePool } from './lib/casePoolBuilder.js';
 
 function getFlag(name: string, defaultValue: string): string {
@@ -13,6 +13,7 @@ async function main(): Promise<void> {
     .split(',')
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+  const structuredOutputMode = getStructuredOutputMode(getFlag('structured-output', process.env.GROQ_STRUCTURED_OUTPUT_MODE ?? 'strict'));
   const count = Number(getFlag('count', '10'));
   const minScore = Number(getFlag('min-score', '70'));
   const maxAttempts = Number(getFlag('max-attempts', String(count * 3)));
@@ -24,6 +25,7 @@ async function main(): Promise<void> {
     maxAttempts,
     model,
     fallbackModels,
+    structuredOutputMode,
     status: status as 'draft' | 'ready',
     dryRun,
   });

@@ -250,6 +250,7 @@ export default function OverlayPage() {
       (!runtime ||
         !runtime.gameState.enabled ||
         runtime.gameState.paused ||
+        runtime.gameState.phase === 'join_open' ||
         !runtime.activeCase),
   );
 
