@@ -2,6 +2,8 @@ import {
   DEFAULT_GROQ_CASE_MODEL,
   GENERATED_REJECTED_CASES_DIR,
   GroqRateLimitError,
+  GroqSchemaValidationError,
+  GroqTransportError,
   GroqUnsupportedStructuredOutputModelError,
   generateCaseWithGroq,
   saveGeneratedCaseFile,
@@ -127,6 +129,11 @@ export async function buildCasePoolAgainstCorpus(
       break;
     }
 
+    if ('recoverableFailure' in generation && generation.recoverableFailure) {
+      warnings.push(generation.warning);
+      continue;
+    }
+
     const envelope =
       'envelope' in generation
         ? generation.envelope
@@ -230,10 +237,17 @@ async function generateWithFallbackModels(
       quotaWaitSeconds: number | null;
       warning: string;
     }
+  | {
+      pausedDueToQuota: false;
+      recoverableFailure: true;
+      warning: string;
+    }
 > {
   let highestRetryAfter: number | null = null;
   const exhaustedModels: string[] = [];
   const skippedModels: string[] = [];
+  const schemaFailedModels: string[] = [];
+  const transportFailedModels: string[] = [];
 
   for (const model of models) {
     if (!supportsStrictStructuredOutputs(model)) {
@@ -256,6 +270,16 @@ async function generateWithFallbackModels(
         continue;
       }
 
+      if (error instanceof GroqSchemaValidationError) {
+        schemaFailedModels.push(model);
+        continue;
+      }
+
+      if (error instanceof GroqTransportError) {
+        transportFailedModels.push(model);
+        continue;
+      }
+
       if (!(error instanceof GroqRateLimitError) || !error.isDailyTokenLimit) {
         throw error;
       }
@@ -268,6 +292,26 @@ async function generateWithFallbackModels(
   }
 
   if (exhaustedModels.length === 0) {
+    if (schemaFailedModels.length > 0 || transportFailedModels.length > 0) {
+      return {
+        pausedDueToQuota: false,
+        recoverableFailure: true,
+        warning: [
+          skippedModels.length > 0
+            ? `Skipped incompatible structured-output models: ${skippedModels.join(', ')}.`
+            : null,
+          schemaFailedModels.length > 0
+            ? `Schema validation failed for: ${schemaFailedModels.join(', ')}. The run will skip this attempt and continue.`
+            : null,
+          transportFailedModels.length > 0
+            ? `Transient Groq transport failures occurred for: ${transportFailedModels.join(', ')}. The run will retry on the next attempt.`
+            : null,
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join(' '),
+      };
+    }
+
     throw new Error(
       skippedModels.length > 0
         ? `No configured Groq models support strict json_schema structured outputs. Supported strict models: openai/gpt-oss-20b, openai/gpt-oss-120b. Skipped: ${skippedModels.join(', ')}.`

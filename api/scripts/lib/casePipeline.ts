@@ -66,6 +66,26 @@ export class GroqUnsupportedStructuredOutputModelError extends Error {
   }
 }
 
+export class GroqSchemaValidationError extends Error {
+  model: string;
+
+  constructor(model: string, message: string) {
+    super(message);
+    this.name = 'GroqSchemaValidationError';
+    this.model = model;
+  }
+}
+
+export class GroqTransportError extends Error {
+  model: string;
+
+  constructor(model: string, message: string) {
+    super(message);
+    this.name = 'GroqTransportError';
+    this.model = model;
+  }
+}
+
 export const GENERATED_CASES_DIR = path.resolve(process.cwd(), 'content/generated/cases');
 export const GENERATED_ASSETS_DIR = path.resolve(process.cwd(), 'content/generated/assets');
 export const GENERATED_REJECTED_CASES_DIR = path.resolve(process.cwd(), 'content/generated/rejected');
@@ -200,15 +220,18 @@ export async function generateCaseWithGroq(model: string, options?: GenerationOp
       const isDailyTokenLimit = /tokens per day|TPD/i.test(errorText);
       const isSchemaValidationFailure = /json_validate_failed/i.test(errorText);
 
-      lastError =
-        response.status === 429
-          ? new GroqRateLimitError({
-              model,
-              message: `Groq generation failed: ${response.status} ${errorText}`,
-              retryAfterSeconds: retrySeconds,
-              isDailyTokenLimit,
-            })
-          : new Error(`Groq generation failed: ${response.status} ${errorText}`);
+      if (response.status === 429) {
+        lastError = new GroqRateLimitError({
+          model,
+          message: `Groq generation failed: ${response.status} ${errorText}`,
+          retryAfterSeconds: retrySeconds,
+          isDailyTokenLimit,
+        });
+      } else if (isSchemaValidationFailure) {
+        lastError = new GroqSchemaValidationError(model, `Groq generation failed: ${response.status} ${errorText}`);
+      } else {
+        lastError = new Error(`Groq generation failed: ${response.status} ${errorText}`);
+      }
 
       if (response.status === 429 && isDailyTokenLimit) {
         throw lastError;
@@ -222,7 +245,11 @@ export async function generateCaseWithGroq(model: string, options?: GenerationOp
 
       throw lastError;
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Unknown Groq generation error.');
+      if (error instanceof Error && /fetch failed/i.test(error.message)) {
+        lastError = new GroqTransportError(model, `Groq transport failed: ${error.message}`);
+      } else {
+        lastError = error instanceof Error ? error : new Error('Unknown Groq generation error.');
+      }
 
       if (attempt < GROQ_MAX_RETRIES - 1) {
         await sleep(1000);
