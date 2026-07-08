@@ -21,6 +21,32 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Debug Supabase target
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          node --input-type=module - <<'EOF'
+          const url = process.env.SUPABASE_URL ?? '';
+          const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
+          const projectRefFromUrl = (() => {
+            try {
+              return new URL(url).hostname.split('.')[0] ?? null;
+            } catch {
+              return null;
+            }
+          })();
+          const projectRefFromKey = (() => {
+            try {
+              const payload = JSON.parse(Buffer.from(key.split('.')[1] ?? '', 'base64url').toString('utf8'));
+              return payload.ref ?? null;
+            } catch {
+              return null;
+            }
+          })();
+          console.log(JSON.stringify({ projectRefFromUrl, projectRefFromKey }, null, 2));
+          EOF
+
       - name: Top up ready case pool
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
@@ -41,3 +67,30 @@ jobs:
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           PORT: 3001
         run: npm run cases:top-up-ready -- --target-ready=25 --min-score=72 --max-attempts-per-case=4
+
+      - name: Debug Supabase case counts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          node --input-type=module - <<'EOF'
+          import { createClient } from '@supabase/supabase-js';
+          const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+            auth: { autoRefreshToken: false, persistSession: false },
+          });
+          const { data, error } = await supabase.from('cases').select('id,victim_name,status,created_at').order('created_at', { ascending: false }).limit(5);
+          if (error) {
+            console.error(error.message);
+            process.exit(1);
+          }
+          const { data: allRows, error: countError } = await supabase.from('cases').select('status');
+          if (countError) {
+            console.error(countError.message);
+            process.exit(1);
+          }
+          const counts = (allRows ?? []).reduce((acc, row) => {
+            acc[row.status] = (acc[row.status] ?? 0) + 1;
+            return acc;
+          }, {});
+          console.log(JSON.stringify({ total: allRows?.length ?? 0, counts, sample: data ?? [] }, null, 2));
+          EOF
